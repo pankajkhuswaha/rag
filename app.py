@@ -321,9 +321,10 @@ with st.sidebar:
     # System Status info
     st.markdown("---")
     backend_display = f"⚡ Groq (`{selected_model}`)" if is_groq else f"🏠 Ollama (`{selected_model}`)"
+    embed_name = getattr(vectorstore._embedding_function, "model_name", EMBEDDING_MODEL)
     st.caption(
         f"**Engine:** {backend_display}  \n"
-        f"**Embeddings:** `{EMBEDDING_MODEL}`  \n"
+        f"**Embeddings:** `{embed_name}`  \n"
         f"**Reranker:** `{RERANKER_MODEL.split('/')[-1]}`  \n"
         f"**Cutoff:** `>= {score_threshold}`  \n"
         f"**Thread ID:** `{st.session_state.thread_id[:8]}...`"

@@ -1,13 +1,24 @@
 import os
+import urllib.request
 from typing import Iterator, List, Optional
 from collections import Counter
 from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
 from langchain_core.document_loaders import BaseLoader
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
-from agent.config import PDF_PATH, DB_DIR, DOCUMENTS_DIR, EMBEDDING_MODEL, CHUNK_SIZE, CHUNK_OVERLAP
+from agent.config import (
+    PDF_PATH,
+    DB_DIR,
+    DOCUMENTS_DIR,
+    EMBEDDING_MODEL,
+    EMBEDDING_PROVIDER,
+    HF_EMBEDDING_MODEL,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+)
 
 
 class LocalPDFLoader(BaseLoader):
@@ -53,6 +64,64 @@ class LocalTextLoader(BaseLoader):
             )
 
 
+class LocalHuggingFaceEmbeddings(Embeddings):
+    """Cloud-ready embedding model using sentence-transformers (all-MiniLM-L6-v2).
+    Requires ZERO external servers/daemons, 100% free, and runs on CPU in any cloud platform."""
+
+    def __init__(self, model_name: str = HF_EMBEDDING_MODEL):
+        self.model_name = model_name
+        try:
+            self.model = SentenceTransformer(model_name, local_files_only=True)
+        except Exception:
+            self.model = SentenceTransformer(model_name)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        embeddings = self.model.encode(texts, show_progress_bar=False)
+        return embeddings.tolist()
+
+    def embed_query(self, text: str) -> List[float]:
+        embedding = self.model.encode([text], show_progress_bar=False)[0]
+        return embedding.tolist()
+
+
+def is_ollama_running(host: str = "http://127.0.0.1:11434", timeout: float = 0.5) -> bool:
+    """Checks if a local Ollama daemon is accessible."""
+    try:
+        req = urllib.request.Request(f"{host}/api/version")
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def get_embedding_function() -> Embeddings:
+    """Intelligently resolves embeddings: uses Ollama if running, otherwise falls back
+    to in-process HuggingFace embeddings (guaranteeing zero ConnectionErrors in the cloud)."""
+    provider = EMBEDDING_PROVIDER
+
+    if provider == "huggingface":
+        return LocalHuggingFaceEmbeddings()
+    elif provider == "ollama":
+        try:
+            from langchain_ollama import OllamaEmbeddings
+            return OllamaEmbeddings(model=EMBEDDING_MODEL)
+        except Exception:
+            print("Ollama requested but unavailable. Falling back to HuggingFace embeddings.")
+            return LocalHuggingFaceEmbeddings()
+    else:  # 'auto'
+        if is_ollama_running():
+            try:
+                from langchain_ollama import OllamaEmbeddings
+                return OllamaEmbeddings(model=EMBEDDING_MODEL)
+            except Exception:
+                return LocalHuggingFaceEmbeddings()
+        else:
+            # Cloud (Streamlit Cloud, HuggingFace Spaces) or local without Ollama
+            return LocalHuggingFaceEmbeddings()
+
+
 def load_document(file_path: str, display_name: Optional[str] = None) -> List[Document]:
     """Loads a document based on its extension."""
     ext = os.path.splitext(file_path)[1].lower()
@@ -67,13 +136,19 @@ def load_document(file_path: str, display_name: Optional[str] = None) -> List[Do
 
 def get_vectorstore() -> Chroma:
     """Loads existing ChromaDB from disk or indexes the initial documents on first run."""
-    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embedding_function()
+
+    # Route Chroma storage directory based on embedding model to avoid dimension conflicts
+    if isinstance(embeddings, LocalHuggingFaceEmbeddings):
+        target_db_dir = "./chroma_db_hf"
+    else:
+        target_db_dir = DB_DIR
 
     os.makedirs(DOCUMENTS_DIR, exist_ok=True)
-    os.makedirs(DB_DIR, exist_ok=True)
+    os.makedirs(target_db_dir, exist_ok=True)
 
     vectorstore = Chroma(
-        persist_directory=DB_DIR,
+        persist_directory=target_db_dir,
         embedding_function=embeddings,
     )
 
@@ -85,12 +160,12 @@ def get_vectorstore() -> Chroma:
 
     if not has_existing_data:
         if os.path.exists(PDF_PATH):
-            print(f"Indexing initial document {PDF_PATH}...")
+            print(f"Indexing initial document {PDF_PATH} into {target_db_dir}...")
             ingest_document(PDF_PATH, vectorstore=vectorstore)
         else:
-            print("Vectorstore initialized (empty). Upload documents via the UI to populate.")
+            print(f"Vectorstore initialized ({target_db_dir}). Upload documents via the UI to populate.")
     else:
-        print("Loaded existing vector database.")
+        print(f"Loaded existing vector database from {target_db_dir}.")
 
     return vectorstore
 

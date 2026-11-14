@@ -10,7 +10,12 @@ PDF_PATH = "./documents/prospectous.pdf"
 DB_DIR = "./chroma_db"
 
 # LLM Provider: 'ollama' (Local) or 'groq' (Cloud)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq" if os.getenv("GROQ_API_KEY") else "ollama").lower()
+
+# Embedding Provider: 'auto', 'huggingface' (Cloud/No Ollama), or 'ollama'
+# 'huggingface' runs completely inside Python CPU using sentence-transformers (Zero Ollama needed!)
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "auto").lower()
+HF_EMBEDDING_MODEL = os.getenv("HF_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 # Local Ollama Models
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
